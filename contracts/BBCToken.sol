@@ -1,42 +1,40 @@
-pragma solidity ^0.6.0;
+pragma solidity ^0.8.0;
 
 // SPDX-License-Identifier: MIT
 
-import "./SafeMath.sol";
+import "./Ownable.sol";
 
 /**
     @title Bare-bones Token implementation
     @notice Based on the ERC-20 token standard as defined at
             https://eips.ethereum.org/EIPS/eip-20
  */
-contract Token {
+contract BBCToken is Ownable {
 
-    using SafeMath for uint256;
-
-    string public symbol;
-    string public name;
-    uint256 public decimals;
+    string public symbol = "BBC";
+    string public name = "Big Black Coin";
+    uint256 public decimals = 18;
     uint256 public totalSupply;
+    uint256 public remainingMintable;
+    bool public isRecoverable = false;
 
     mapping(address => uint256) balances;
     mapping(address => mapping(address => uint256)) allowed;
 
     event Transfer(address from, address to, uint256 value);
     event Approval(address owner, address spender, uint256 value);
+    event Mint(address to, uint256 value);
+
+    uint256 private ETH_MULTIPLIER = 1000000; // 1,000,000
 
     constructor(
-        string memory _name,
-        string memory _symbol,
-        uint256 _decimals,
         uint256 _totalSupply
-    )
-        public
-    {
-        name = _name;
-        symbol = _symbol;
-        decimals = _decimals;
+    ) {
+        require(_totalSupply % 10 == 0, "BBC: Totaly supply not multiple of 10");
+
         totalSupply = _totalSupply;
-        balances[msg.sender] = _totalSupply;
+        balances[msg.sender] = _totalSupply / 5;
+        remainingMintable = _totalSupply - _totalSupply / 5;
         emit Transfer(address(0), msg.sender, _totalSupply);
     }
 
@@ -85,8 +83,8 @@ contract Token {
     /** shared logic for transfer and transferFrom */
     function _transfer(address _from, address _to, uint256 _value) internal {
         require(balances[_from] >= _value, "Insufficient balance");
-        balances[_from] = balances[_from].sub(_value);
-        balances[_to] = balances[_to].add(_value);
+        balances[_from] = balances[_from] - (_value);
+        balances[_to] = balances[_to] + (_value);
         emit Transfer(_from, _to, _value);
     }
 
@@ -116,10 +114,66 @@ contract Token {
         public
         returns (bool)
     {
-        require(allowed[_from][msg.sender] >= _value, "Insufficient allowance");
-        allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_value);
+        require(allowed[_from][msg.sender] >= _value, "BBC: Insufficient allowance");
+        allowed[_from][msg.sender] = allowed[_from][msg.sender] - (_value);
         _transfer(_from, _to, _value);
         return true;
     }
 
+    /**
+        @notice Purchase tokens with ETH
+        @param _to The address which receives funds
+    */
+    function purchase(address _to) public payable {
+        require(msg.value > 0, "BBC: Require ETH payment");
+        require(remainingMintable > 0, "BBC: Nothing left to purchase");
+
+        uint256 mintAmount = msg.value * ETH_MULTIPLIER;
+
+        // Handle case where we attempt to mint more than remainingMintable
+        uint256 refundAmount = 0;
+        if (mintAmount > remainingMintable) {
+            mintAmount = remainingMintable;
+            refundAmount = msg.value - mintAmount / ETH_MULTIPLIER;
+        }
+
+        // Set address to receive funds
+        address to = _to;
+        if (to == address(0)) {
+            to = msg.sender;
+        }
+        balances[to] = balances[to] + mintAmount;
+
+        // Refund user is required
+        if (refundAmount > 0) {
+            payable(msg.sender).transfer(refundAmount);
+        }
+
+        emit Transfer(address(0), to, mintAmount);
+        emit Mint(to, mintAmount);
+    }
+
+    /**
+        @notice Allows tokens to be recovered (this is irreversible)
+    */
+    function setRecoverable() public onlyOwner {
+        isRecoverable = true;
+    }
+
+    /**
+        @notice Recover tokens after a project has come to completion
+        @param _to User to recieve tokens (if zero balance sent to msg.sender)
+    */
+    function recoverTokens(address payable _to) public {
+        uint256 adjustedBalance = balances[msg.sender] / ETH_MULTIPLIER;
+        require(adjustedBalance > 0, "BBC: Insufficient Balance");
+
+        balances[msg.sender] = 0;
+
+        if (_to == address(0)) {
+            payable(msg.sender).transfer(adjustedBalance);
+        } else {
+            _to.transfer(adjustedBalance);
+        }
+    }
 }
